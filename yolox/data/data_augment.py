@@ -234,8 +234,15 @@ class ValTransform:
 
     # assume input is cv2 img for now
     def __call__(self, img, res, input_size):
+        #print('USING VAL TRANSFORM LEGACY = ', self.legacy)
+        # NEW CHANGE (EXPERIMENTAL DO NOT KEEP)
+        # print('input size = ', input_size)
+        # input_shape = tuple(map(int, "640,640".split(',')))
+        # img, _ = preproc(img, input_shape)
+        # NEW CHANGE ENDS HERE
         img, _ = preproc(img, input_size, self.swap)
         if self.legacy:
+            print('legacy is true')
             img = img[::-1, :, :].copy()
             img /= 255.0
             img -= np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)

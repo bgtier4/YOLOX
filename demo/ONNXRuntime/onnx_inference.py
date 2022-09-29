@@ -63,13 +63,25 @@ if __name__ == '__main__':
     args = make_parser().parse_args()
 
     input_shape = tuple(map(int, args.input_shape.split(',')))
+    print('input_shape = ', input_shape)
     origin_img = cv2.imread(args.image_path)
+    print("type of img = ", type(origin_img))
+    #print(origin_img)
+    print("size of img = ", origin_img.size)
+    print("image dimensions = ", origin_img.shape)
     img, ratio = preprocess(origin_img, input_shape)
+    print("size of img post processing = ", origin_img.size)
+    print("type of img post processing = ", type(origin_img))
+    print("image dimensions post processing = ", origin_img.shape)
 
-    session = onnxruntime.InferenceSession(args.model)
+    session = onnxruntime.InferenceSession(args.model, providers=["CUDAExecutionProvider"])
 
     ort_inputs = {session.get_inputs()[0].name: img[None, :, :, :]}
     output = session.run(None, ort_inputs)
+    print('output = ', output[0])
+    import torch
+    print('output as tensor = ', torch.from_numpy(output[0]))
+    print('output shape = ', output[0].shape)
     predictions = demo_postprocess(output[0], input_shape, p6=args.with_p6)[0]
 
     boxes = predictions[:, :4]

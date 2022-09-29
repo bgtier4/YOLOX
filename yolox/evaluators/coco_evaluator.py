@@ -17,6 +17,11 @@ import numpy as np
 
 import torch
 
+import onnxruntime # NEW CHANGE
+import tensorrt as trt # NEW CHANGE
+import pycuda.driver as cuda
+import pycuda.autoinit
+
 from yolox.data.datasets import COCO_CLASSES
 from yolox.utils import (
     gather,
@@ -26,6 +31,7 @@ from yolox.utils import (
     time_synchronized,
     xyxy2xywh
 )
+from yolox.utils.demo_utils import demo_postprocess, multiclass_nms
 
 
 def per_class_AR_table(coco_eval, class_names=COCO_CLASSES, headers=["class", "AR"], colums=6):
@@ -115,7 +121,7 @@ class COCOEvaluator:
 
     def evaluate(
         self, model, distributed=False, half=False, trt_file=None,
-        decoder=None, test_size=None, return_outputs=False
+        decoder=None, test_size=None, return_outputs=False, onnx=False, onnx_path="", onnx2trt=False, engine_file_path="" # NEW CHANGE
     ):
         """
         COCO average precision (AP) Evaluation. Iterate inference on the test dataset
@@ -131,42 +137,133 @@ class COCOEvaluator:
             ap50 (float) : COCO AP of IoU=50
             summary (sr): summary info of evaluation.
         """
+        print('in evaluate')
+        print('is_main_process() = ', is_main_process())
         # TODO half to amp_test
-        tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
-        model = model.eval()
-        if half:
-            model = model.half()
-        ids = []
-        data_list = []
-        output_data = defaultdict()
-        progress_bar = tqdm if is_main_process() else iter
+        if not onnx and not onnx2trt: # NEW CHANGE
+            tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
+            model = model.eval()
+            if half:
+                model = model.half()
+            ids = []
+            data_list = []
+            output_data = defaultdict()
+            progress_bar = tqdm if is_main_process() else iter
 
-        inference_time = 0
-        nms_time = 0
-        n_samples = max(len(self.dataloader) - 1, 1)
+            inference_time = 0
+            nms_time = 0
+            n_samples = max(len(self.dataloader) - 1, 1)
 
-        if trt_file is not None:
-            from torch2trt import TRTModule
+            if trt_file is not None:
+                from torch2trt import TRTModule
 
-            model_trt = TRTModule()
-            model_trt.load_state_dict(torch.load(trt_file))
+                model_trt = TRTModule()
+                model_trt.load_state_dict(torch.load(trt_file))
 
-            x = torch.ones(1, 3, test_size[0], test_size[1]).cuda()
-            model(x)
-            model = model_trt
+                x = torch.ones(1, 3, test_size[0], test_size[1]).cuda()
+                model(x)
+                model = model_trt
+        # NEW CHANGE
+        elif onnx2trt:
+            tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
 
+            ids = []
+            data_list = []
+            output_data = defaultdict()
+            progress_bar = tqdm if is_main_process() else iter
+
+            inference_time = 0
+            nms_time = 0
+            n_samples = max(len(self.dataloader) - 1, 1)
+
+            assert(len(engine_file_path) > 0), "Engine file path was not specified!"
+            TRT_LOGGER = trt.Logger()
+            runtime = trt.Runtime(TRT_LOGGER)
+            with open(engine_file_path, 'rb') as f:
+                print('reading ', engine_file_path,'...')
+                engine_bytes = f.read()
+                engine = runtime.deserialize_cuda_engine(engine_bytes)
+                print('engine deserialized')
+            context = engine.create_execution_context()
+        else:
+            tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
+
+            ids = []
+            data_list = []
+            output_data = defaultdict()
+            progress_bar = tqdm if is_main_process() else iter
+
+            inference_time = 0
+            nms_time = 0
+            n_samples = max(len(self.dataloader) - 1, 1)
+
+            assert(len(onnx_path) > 0), "Onnx model path was not specified!"
+            session = onnxruntime.InferenceSession(onnx_path, providers=['CUDAExecutionProvider'])
+            model = session
+        # print('loaded model')
+
+        # IN HERE IS WHERE VAL DATALOADER IS CALLED
         for cur_iter, (imgs, _, info_imgs, ids) in enumerate(
             progress_bar(self.dataloader)
         ):
+            # print('with torch.no_grad next')
+            # print('imgs.size() = ', imgs.size())
             with torch.no_grad():
-                imgs = imgs.type(tensor_type)
+                # print('setting image type')
+                imgs = imgs.type(tensor_type) # imgs size =  torch.Size([1, 3, 640, 640])
 
                 # skip the last iters since batchsize might be not enough for batch inference
                 is_time_record = cur_iter < len(self.dataloader) - 1
                 if is_time_record:
                     start = time.time()
 
-                outputs = model(imgs)
+                # NEW CHANGE
+                if not onnx and not onnx2trt:
+                    print('ORIG size of orig images', imgs.size())
+                    outputs = model(imgs) # outputs size =  torch.Size([1, 8400, 85])
+                    print('ORIG outputs.size = ', outputs.size())
+                elif onnx2trt:
+                    input_shape = tuple(map(int, "640,640".split(',')))
+
+                    # Input and output buffer okay?
+                    input_buffer = np.ascontiguousarray(imgs.cpu())
+                    output_buffer = torch.zeros(1, 8400, 85).cpu().detach().numpy()
+
+                    imgs_memory = cuda.mem_alloc(input_buffer.nbytes)
+                    output_memory = cuda.mem_alloc(output_buffer.nbytes)
+                    bindings = [int(imgs_memory), int(output_memory)]
+
+                    stream = cuda.Stream()
+                    # Transfer input data from python buffers to device(GPU)
+                    cuda.memcpy_htod_async(imgs_memory, input_buffer, stream)
+                    
+                    context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
+
+                    cuda.memcpy_dtoh_async(output_buffer, output_memory, stream)
+
+                    stream.synchronize()
+
+                    outputs = output_buffer
+
+                else:
+                    input_shape = tuple(map(int, "640,640".split(',')))
+                    ort_imgs = imgs[0].cpu().numpy()
+                    
+                    # print("size of orig_images", imgs.size())
+                    # print("type of orig_images", type(imgs))
+                    # print("size of ort_imgs = ", ort_imgs.shape)
+                    # print("type of ort_imgs = ", type(ort_imgs))
+                    
+                    ort_imgs = {session.get_inputs()[0].name: ort_imgs[None, :, :, :]}
+                    outputs = model.run(None, ort_imgs)
+                    # print('outputs.size = ', outputs[0].shape)
+                    # NEW CHANGE
+                    #outputs = torch.from_numpy(outputs[0])
+                    # print('outputs.size 2 = ', outputs.size())
+                # print(outputs)
+                # import sys
+                # sys.exit()
+
                 if decoder is not None:
                     outputs = decoder(outputs, dtype=outputs.type())
 
@@ -174,15 +271,49 @@ class COCOEvaluator:
                     infer_end = time_synchronized()
                     inference_time += infer_end - start
 
-                outputs = postprocess(
-                    outputs, self.num_classes, self.confthre, self.nmsthre
-                )
+                # NEW CHANGE
+                if not onnx and not onnx2trt:
+                    outputs = postprocess(
+                        outputs, self.num_classes, self.confthre, self.nmsthre
+                    )
+                    # print(outputs)
+                    # print('outputs[0].size() = ', outputs[0].size())
+                    # import sys
+                    # sys.exit()
+                else:
+                    if onnx2trt:
+                        predictions = demo_postprocess(outputs, input_shape, p6=False)[0]
+                    else:
+                        predictions = demo_postprocess(outputs[0], input_shape, p6=False)[0]
+
+                    boxes = predictions[:, :4]
+                    scores = predictions[:, 4:5] * predictions[:, 5:]
+
+                    boxes_xyxy = np.ones_like(boxes)
+                    boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2]/2.
+                    boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3]/2.
+                    boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2]/2.
+                    boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3]/2.
+                    # boxes_xyxy /= ratio I think this is for visualization, not evaluation?
+                    dets = multiclass_nms(boxes_xyxy, scores, nms_thr=0.45, score_thr=0.1)
+                    #print('dets.shape = ', dets[0].shape)
+                    if dets is None:
+                        outputs = []
+                    else:
+                        outputs = [torch.from_numpy(dets), 'cpu']
+                    #print('outputs.size() = ', outputs.size())
+
                 if is_time_record:
                     nms_end = time_synchronized()
                     nms_time += nms_end - infer_end
 
-            data_list_elem, image_wise_data = self.convert_to_coco_format(
-                outputs, info_imgs, ids, return_outputs=True)
+            # NEW CHANGE
+            if not onnx and not onnx2trt:
+                data_list_elem, image_wise_data = self.convert_to_coco_format(
+                    outputs, info_imgs, ids, return_outputs=True)
+            else:
+                data_list_elem, image_wise_data = self.convert_to_coco_format_onnx(
+                    outputs, info_imgs, ids, return_outputs=True)
             data_list.extend(data_list_elem)
             output_data.update(image_wise_data)
 
@@ -312,3 +443,52 @@ class COCOEvaluator:
             return cocoEval.stats[0], cocoEval.stats[1], info
         else:
             return 0, 0, info
+
+    def convert_to_coco_format_onnx(self, outputs, info_imgs, ids, return_outputs=False):
+        data_list = []
+        image_wise_data = defaultdict(dict)
+        # NEED TO DEAL WITH THIS
+        for (output, img_h, img_w, img_id) in zip(
+            outputs, info_imgs[0], info_imgs[1], ids
+        ):
+            if output is None:
+                continue
+            #output = output.cpu()
+
+            bboxes = output[:, 0:4]
+
+            # preprocessing: resize
+            scale = min(
+                self.img_size[0] / float(img_h), self.img_size[1] / float(img_w)
+            )
+            bboxes /= scale
+            cls = output[:, 5]
+            scores = output[:, 4]
+
+            image_wise_data.update({
+                int(img_id): {
+                    "bboxes": [box.numpy().tolist() for box in bboxes],
+                    "scores": [score.numpy().item() for score in scores],
+                    "categories": [
+                        self.dataloader.dataset.class_ids[int(cls[ind])]
+                        for ind in range(bboxes.shape[0])
+                    ],
+                }
+            })
+
+            bboxes = xyxy2xywh(bboxes)
+
+            for ind in range(bboxes.shape[0]):
+                label = self.dataloader.dataset.class_ids[int(cls[ind])]
+                pred_data = {
+                    "image_id": int(img_id),
+                    "category_id": label,
+                    "bbox": bboxes[ind].numpy().tolist(),
+                    "score": scores[ind].numpy().item(),
+                    "segmentation": [],
+                }  # COCO json format
+                data_list.append(pred_data)
+
+        if return_outputs:
+            return data_list, image_wise_data
+        return data_list

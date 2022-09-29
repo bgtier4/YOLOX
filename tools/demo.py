@@ -156,6 +156,8 @@ class Predictor(object):
         with torch.no_grad():
             t0 = time.time()
             outputs = self.model(img)
+            print('output = ', outputs)
+            print('output.size() = ', outputs.size())
             if self.decoder is not None:
                 outputs = self.decoder(outputs, dtype=outputs.type())
             outputs = postprocess(

@@ -109,6 +109,21 @@ def make_parser():
         default=None,
         nargs=argparse.REMAINDER,
     )
+    # NEW CHANGE
+    parser.add_argument(
+        "--onnx",
+        dest="onnx",
+        default=False,
+        action="store_true",
+        help="Configure evaluation to evaluate an onnx model.",
+    )
+    parser.add_argument(
+        "--onnx2trt",
+        dest="onnx2trt",
+        default=False,
+        action="store_true",
+        help="Configure evaluation to evaluate tensorrt model converted from onnx.",
+    )
     return parser
 
 
@@ -157,7 +172,7 @@ def main(exp, args, num_gpu):
     model.cuda(rank)
     model.eval()
 
-    if not args.speed and not args.trt:
+    if not args.speed and not args.trt and not args.onnx and not args.onnx2trt: # NEW CHANGE
         if args.ckpt is None:
             ckpt_file = os.path.join(file_name, "best_ckpt.pth")
         else:
@@ -190,9 +205,20 @@ def main(exp, args, num_gpu):
         decoder = None
 
     # start evaluate
-    *_, summary = evaluator.evaluate(
-        model, is_distributed, args.fp16, trt_file, decoder, exp.test_size
-    )
+    print('start evaluate')
+    if not args.onnx and not args.onnx2trt: # NEW CHANGE
+        *_, summary = evaluator.evaluate(
+            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size
+        )
+    elif args.onnx2trt:
+        *_, summary = evaluator.evaluate(
+            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, onnx2trt=True, engine_file_path=args.ckpt
+        )
+    else:
+        *_, summary = evaluator.evaluate(
+            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, onnx=True, onnx_path=args.ckpt
+        )
+
     logger.info("\n" + summary)
 
 

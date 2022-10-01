@@ -23,6 +23,7 @@ import pycuda.driver as cuda
 import pycuda.autoinit
 
 from yolox.data.datasets import COCO_CLASSES
+from yolox.layers.fast_coco_eval_api import COCOeval_opt
 from yolox.utils import (
     gather,
     is_main_process,
@@ -244,6 +245,7 @@ class COCOEvaluator:
                     stream.synchronize()
 
                     outputs = output_buffer
+                    #print('outputs = ', outputs)
 
                 else:
                     input_shape = tuple(map(int, "640,640".split(',')))
@@ -285,6 +287,7 @@ class COCOEvaluator:
                         predictions = demo_postprocess(outputs, input_shape, p6=False)[0]
                     else:
                         predictions = demo_postprocess(outputs[0], input_shape, p6=False)[0]
+                    #print('predictions = ', predictions)
 
                     boxes = predictions[:, :4]
                     scores = predictions[:, 4:5] * predictions[:, 5:]
@@ -295,12 +298,15 @@ class COCOEvaluator:
                     boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2]/2.
                     boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3]/2.
                     # boxes_xyxy /= ratio I think this is for visualization, not evaluation?
+                    #print('boxes_xyxy = ', boxes_xyxy)
+                    print('scores = ', scores)
                     dets = multiclass_nms(boxes_xyxy, scores, nms_thr=0.45, score_thr=0.1)
+                    #print('dets = ', dets)
                     #print('dets.shape = ', dets[0].shape)
                     if dets is None:
                         outputs = []
                     else:
-                        outputs = [torch.from_numpy(dets), 'cpu']
+                        outputs = [torch.from_numpy(dets), 'cuda']
                     #print('outputs.size() = ', outputs.size())
 
                 if is_time_record:
@@ -406,11 +412,14 @@ class COCOEvaluator:
         )
 
         info = time_info + "\n"
-
+        print('done evaluating speed, now detection accuracy...')
+        #print('len(data_dict) = ', len(data_dict))
+        #print('data dict = ', data_dict)
         # Evaluate the Dt (detection) json comparing with the ground truth
         if len(data_dict) > 0:
             cocoGt = self.dataloader.dataset.coco
             # TODO: since pycocotools can't process dict in py36, write data to json file.
+            print('json dump')
             if self.testdev:
                 json.dump(data_dict, open("./yolox_testdev_2017.json", "w"))
                 cocoDt = cocoGt.loadRes("./yolox_testdev_2017.json")
@@ -418,13 +427,14 @@ class COCOEvaluator:
                 _, tmp = tempfile.mkstemp()
                 json.dump(data_dict, open(tmp, "w"))
                 cocoDt = cocoGt.loadRes(tmp)
+            print('import COCOeval and COCOeval_opt')
             try:
                 from yolox.layers import COCOeval_opt as COCOeval
             except ImportError:
                 from pycocotools.cocoeval import COCOeval
 
                 logger.warning("Use standard COCOeval.")
-
+            print('running COCOeval()')
             cocoEval = COCOeval(cocoGt, cocoDt, annType[1])
             cocoEval.evaluate()
             cocoEval.accumulate()
@@ -448,10 +458,14 @@ class COCOEvaluator:
         data_list = []
         image_wise_data = defaultdict(dict)
         # NEED TO DEAL WITH THIS
+        #print('looking at outputs')
+        #print('outputs = ', outputs)
         for (output, img_h, img_w, img_id) in zip(
             outputs, info_imgs[0], info_imgs[1], ids
         ):
+            #print('inside looking at outputs loop')
             if output is None:
+                print('output is none')
                 continue
             #output = output.cpu()
 
@@ -477,7 +491,7 @@ class COCOEvaluator:
             })
 
             bboxes = xyxy2xywh(bboxes)
-
+            
             for ind in range(bboxes.shape[0]):
                 label = self.dataloader.dataset.class_ids[int(cls[ind])]
                 pred_data = {
@@ -487,6 +501,7 @@ class COCOEvaluator:
                     "score": scores[ind].numpy().item(),
                     "segmentation": [],
                 }  # COCO json format
+                #print('pred_data = ', pred_data)
                 data_list.append(pred_data)
 
         if return_outputs:

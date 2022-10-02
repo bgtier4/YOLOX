@@ -47,16 +47,9 @@ class ImageBatchStream():
     self.batch = 0
     print('running int8 calibration where total # batches will be = ', self.max_batches)
     print()
-    #self.preprocessor = preprocessor
 
   @staticmethod
   def read_image_chw(path):
-    # img = Image.open(path).resize((WIDTH,HEIGHT), Image.NEAREST)
-    # im = np.array(img, dtype=np.float32, order='C')
-    # im = im[:,:,::-1]
-    # im = im.transpose((2,0,1))
-    # NEW CHANGE
-    print('path = ', path)
     img = cv2.imread(path)
     img, _ = preprocess(img, (WIDTH, HEIGHT))
     return img
@@ -74,14 +67,12 @@ class ImageBatchStream():
       for f in files_for_batch:
         print("[ImageBatchStream] Processing ", f)
         img = ImageBatchStream.read_image_chw(f)
-        print('img size = ', img.shape)
         #img = self.preprocessor(img) already preprocessed in read_image_chw
         imgs.append(img)
       for i in range(len(imgs)):
         self.calibration_data[i] = imgs[i]
       self.batch += 1
       print('batch = ', self.batch)
-      print('calibration data shape = ', self.calibration_data.shape)
       return np.ascontiguousarray(self.calibration_data, dtype=np.float32)
     else:
       return None
@@ -104,16 +95,9 @@ class PythonEntropyCalibrator(trt.IInt8EntropyCalibrator2):
   def get_batch(self, names):
     try:
         # Assume self.batches is a generator that provides batch data.
-        print('inside try...')
         data = self.stream.next_batch()
-        if (data is None):
-          print('data is None')
-        else:
-          print('data is NOT None')
-        # Assume that self.device_input is a device buffer allocated by the constructor.
-        #print('over here')
         cuda.memcpy_htod(self.d_input, data)
-        #print('here')
+
         return [int(self.d_input)]
     except:
         # When we're out of batches, we return either [] or None.

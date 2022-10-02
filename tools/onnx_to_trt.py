@@ -4,6 +4,7 @@ import pycuda.driver as cuda
 import numpy as np
 from PIL import Image
 import cv2
+import argparse
 
 from os import listdir
 import os
@@ -13,6 +14,25 @@ from yolox.data.data_augment import preproc as preprocess
 CHANNEL = 3
 HEIGHT = 640
 WIDTH = 640
+
+def make_parser():
+    parser = argparse.ArgumentParser("YOLOX Eval")
+    
+    parser.add_argument(
+        "--fp16",
+        dest="fp16",
+        default=False,
+        action="store_true",
+        help="Make fp16 tensorrt engine",
+    )
+    parser.add_argument(
+        "--int8",
+        dest="int8",
+        default=False,
+        action="store_true",
+        help="Make int8 tensorrt engine",
+    )
+    return parser
 
 # BATCH STREAM
 class ImageBatchStream():
@@ -68,9 +88,9 @@ class ImageBatchStream():
 
 
 # ENTROPY CALIBRATOR
-class PythonEntropyCalibrator(trt.IInt8EntropyCalibrator):
+class PythonEntropyCalibrator(trt.IInt8EntropyCalibrator2):
   def __init__(self, input_layers, stream):
-    trt.IInt8EntropyCalibrator.__init__(self)
+    trt.IInt8EntropyCalibrator2.__init__(self)
     self.input_layers = input_layers
     self.stream = stream
     self.d_input = cuda.mem_alloc(self.stream.calibration_data.nbytes)
@@ -114,7 +134,12 @@ class PythonEntropyCalibrator(trt.IInt8EntropyCalibrator):
 
 
 def build_engine(model_file, max_ws=512*1024*1024, fp16=False, int8=False):
-    print("building engine")
+    if int8:
+      print("building int8 engine")
+    elif fp16:
+      print("building fp16 engine")
+    else:
+      print("building fp32 engine")
     TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(TRT_LOGGER)
     config = builder.create_builder_config()
@@ -123,17 +148,15 @@ def build_engine(model_file, max_ws=512*1024*1024, fp16=False, int8=False):
         config.flags |= 1 << int(trt.BuilderFlag.FP16)
     elif int8:
         NUM_IMAGES_PER_BATCH = 64
-        # Calibration files should overlap with training/val/test sets!!!
-        # CHANGE THIS!
+
+        # Should calibration files overlap with training/val/test sets?
         path2data = '/home/benjamin-gilby/venv_project/YOLOX/datasets/COCO/val2017'
         calibration_files = [os.path.join(path2data, f) for f in listdir(path2data)]
 
         # for speed
         #calibration_files = calibration_files[:(64*20)]
         
-        # How to make batch stream and int8 calibrator?
         batchstream = ImageBatchStream(NUM_IMAGES_PER_BATCH, calibration_files)
-
         Int8_calibrator = PythonEntropyCalibrator(["images"], batchstream)
 
         config.flags |= 1 << int(trt.BuilderFlag.INT8)
@@ -141,26 +164,20 @@ def build_engine(model_file, max_ws=512*1024*1024, fp16=False, int8=False):
     
     explicit_batch = 1 << int(trt.NetworkDefinitionCreationFlag.\
                                                   EXPLICIT_BATCH)
+    print('explicit_batch = ', explicit_batch)
     network = builder.create_network(explicit_batch)
     with trt.OnnxParser(network, TRT_LOGGER) as parser:
         with open(model_file, 'rb') as model:
             parsed = parser.parse(model.read())
             print("network.num_layers", network.num_layers)
-            #last_layer = network.get_layer(network.num_layers - 1)
-            #network.mark_output(last_layer.get_output(0))
-            
-            # engine = builder.build_engine(network, config=config)
-            # return engine
+
             serialized_network = builder.build_serialized_network(network, config=config)
             return serialized_network
             
 
 
-# engine = build_engine("models/yolox_x.onnx")
-
-# with open('engine.trt', 'wb') as f:
-#     f.write(bytearray(engine.serialize()))
-
-serialized_network = build_engine("models/yolox_x.onnx", fp16=False, int8=True)
-with open('engineint8.trt', 'wb') as f:
+args = make_parser().parse_args()
+serialized_network = build_engine("models/yolox_x.onnx", fp16=args.fp16, int8=args.int8)
+print('saving engine as engine.trt in working directory')
+with open('engine.trt', 'wb') as f:
      f.write(bytearray(serialized_network))

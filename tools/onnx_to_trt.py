@@ -32,6 +32,7 @@ def make_parser():
         action="store_true",
         help="Make int8 tensorrt engine",
     )
+    parser.add_argument("-p", "--onnx_path", default=None, type=str, help="path to onnx model")
     return parser
 
 # BATCH STREAM
@@ -161,7 +162,7 @@ def build_engine(model_file, max_ws=512*1024*1024, fp16=False, int8=False):
 
 
 args = make_parser().parse_args()
-serialized_network = build_engine("models/yolox_x.onnx", fp16=args.fp16, int8=args.int8)
+serialized_network = build_engine(args.onnx_path, fp16=args.fp16, int8=args.int8)
 print('saving engine as engine.trt in working directory')
 with open('engine.trt', 'wb') as f:
      f.write(bytearray(serialized_network))

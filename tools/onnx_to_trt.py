@@ -8,8 +8,10 @@ import argparse
 
 from os import listdir
 import os
+from pycocotools.coco import COCO
 
 from yolox.data.data_augment import preproc as preprocess
+
 
 CHANNEL = 3
 HEIGHT = 640
@@ -32,8 +34,26 @@ def make_parser():
         action="store_true",
         help="Make int8 tensorrt engine",
     )
-    parser.add_argument("-p", "--onnx_path", default=None, type=str, help="path to onnx model")
+    parser.add_argument("-o", "--onnx_path", default=None, type=str, help="path to onnx model")
+    parser.add_argument("-c", "--calib_path", default=None, type=str, help="path to calibration files")
     return parser
+
+
+def get_calibration_files(ann_path):
+    coco = COCO(ann_path)
+    ids = coco.getImgIds()
+
+    calibration_files = []
+    for id in ids:
+        image_ann = coco.loadImgs(id)[0]
+        file_name = image_ann['file_name']
+        img_file = os.path.join('/home/benjamin-gilby/venv_project/YOLOX/datasets/COCO/val2017', file_name)
+        calibration_files.append(img_file)
+
+    print(len(calibration_files))
+    print(calibration_files[0])
+    return calibration_files
+
 
 # BATCH STREAM
 class ImageBatchStream():
@@ -104,14 +124,14 @@ class PythonEntropyCalibrator(trt.IInt8EntropyCalibrator2):
         # When we're out of batches, we return either [] or None.
         # This signals to TensorRT that there is no calibration data remaining.
         print('out of batches')
-        return []
+        #return []
+        return None
 
   def read_calibration_cache(self):
-    # If there is a cache, use it instead of calibrating again. Otherwise, implicitly return None.
-    # if os.path.exists(self.cache_file):
-    #     with open(self.cache_file, "rb") as f:
-    #         return f.read()
-    return None
+    If there is a cache, use it instead of calibrating again. Otherwise, implicitly return None.
+    if os.path.exists(self.cache_file):
+        with open(self.cache_file, "rb") as f:
+            return f.read()
 
   def write_calibration_cache(self, cache):
     with open(self.cache_file, "wb") as f:
@@ -134,12 +154,7 @@ def build_engine(model_file, max_ws=512*1024*1024, fp16=False, int8=False):
     elif int8:
         NUM_IMAGES_PER_BATCH = 64
 
-        # Should calibration files overlap with training/val/test sets?
-        path2data = '/home/benjamin-gilby/venv_project/YOLOX/datasets/COCO/val2017'
-        calibration_files = [os.path.join(path2data, f) for f in listdir(path2data)]
-
-        # for speed
-        #calibration_files = calibration_files[:(64*20)]
+        calibration_files = get_calibration_files(args.ann_path)
         
         batchstream = ImageBatchStream(NUM_IMAGES_PER_BATCH, calibration_files)
         Int8_calibrator = PythonEntropyCalibrator(["images"], batchstream)

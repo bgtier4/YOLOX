@@ -181,7 +181,6 @@ class COCOEvaluator:
         else:
             assert(len(onnx_path) > 0), "Onnx model path was not specified!"
             session = onnxruntime.InferenceSession(onnx_path, providers=['CUDAExecutionProvider'])
-            #session = onnxruntime.InferenceSession(onnx_path, providers=['TensorrtExecutionProvider'])
             model = session
         
         # to avoid cuda out of memory error
@@ -193,9 +192,6 @@ class COCOEvaluator:
         for cur_iter, (imgs, _, info_imgs, ids) in enumerate(
             progress_bar(self.dataloader)
         ):
-            # print('emptying cache...')
-            # gc.collect()
-            # torch.cuda.empty_cache()
 
             with torch.no_grad():
                 imgs = imgs.type(tensor_type) # imgs size =  torch.Size([1, 3, 640, 640])
@@ -207,11 +203,7 @@ class COCOEvaluator:
 
                 # NEW CHANGE
                 if not onnx and not onnx2trt:
-                    # print('emptying cache...')
-                    # gc.collect()
-                    # torch.cuda.empty_cache()
                     outputs = model(imgs) # outputs size =  torch.Size([1, 8400, 85])
-                    #print(outputs.size())
 
                 elif onnx2trt:
                     input_shape = tuple(map(int, "640,640".split(',')))
@@ -243,7 +235,6 @@ class COCOEvaluator:
 
                     ort_imgs = {session.get_inputs()[0].name: ort_imgs[None, :, :, :]}
                     outputs = model.run(None, ort_imgs)
-                    #print(outputs[0].shape) # (1, 3549, 85)
 
                 if decoder is not None:
                     outputs = decoder(outputs, dtype=outputs.type())
@@ -254,7 +245,6 @@ class COCOEvaluator:
 
                 # NEW CHANGE
                 if not onnx and not onnx2trt:
-                    #print('outputs.size() = ', outputs.size())
                     outputs = postprocess(
                         outputs, self.num_classes, self.confthre, self.nmsthre
                     )
@@ -293,11 +283,6 @@ class COCOEvaluator:
             data_list.extend(data_list_elem)
             output_data.update(image_wise_data)
 
-        #print('type of outputs = ', type(data_list))
-        #print('outputs: ', output_data)
-        #print('number of output keys = ', len(data_list.keys()))
-        #print('list of output keys = ', data_list.keys())
-        #print('output_data = ', data_list)
 
         statistics = torch.cuda.FloatTensor([inference_time, nms_time, n_samples])
         if distributed:
@@ -309,10 +294,6 @@ class COCOEvaluator:
 
         eval_results = self.evaluate_prediction(data_list, statistics)
         synchronize()
-
-        if self.testdev:
-            with open('results.json', 'w', encoding='utf-8') as f:
-                json.dump(data_list, f, ensure_ascii=False, indent=4)
 
         if return_outputs:
             return eval_results, output_data

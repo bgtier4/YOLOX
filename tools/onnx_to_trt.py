@@ -128,10 +128,11 @@ class PythonEntropyCalibrator(trt.IInt8EntropyCalibrator2):
         return None
 
   def read_calibration_cache(self):
-    If there is a cache, use it instead of calibrating again. Otherwise, implicitly return None.
-    if os.path.exists(self.cache_file):
-        with open(self.cache_file, "rb") as f:
-            return f.read()
+    # If there is a cache, use it instead of calibrating again. Otherwise, implicitly return None.
+    # if os.path.exists(self.cache_file):
+    #     with open(self.cache_file, "rb") as f:
+    #         return f.read()
+    return None
 
   def write_calibration_cache(self, cache):
     with open(self.cache_file, "wb") as f:
@@ -152,9 +153,9 @@ def build_engine(model_file, max_ws=512*1024*1024, fp16=False, int8=False):
     if fp16:
         config.flags |= 1 << int(trt.BuilderFlag.FP16)
     elif int8:
-        NUM_IMAGES_PER_BATCH = 64
+        NUM_IMAGES_PER_BATCH = 512 # larger batches might be better for entropy calibrator
 
-        calibration_files = get_calibration_files(args.ann_path)
+        calibration_files = get_calibration_files(args.calib_path)
         
         batchstream = ImageBatchStream(NUM_IMAGES_PER_BATCH, calibration_files)
         Int8_calibrator = PythonEntropyCalibrator(["images"], batchstream)

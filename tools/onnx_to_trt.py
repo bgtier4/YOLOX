@@ -12,10 +12,7 @@ from pycocotools.coco import COCO
 
 from yolox.data.data_augment import preproc as preprocess
 
-
-CHANNEL = 3
-HEIGHT = 640
-WIDTH = 640
+from yolox.exp import get_exp
 
 def make_parser():
     parser = argparse.ArgumentParser("YOLOX Eval")
@@ -34,8 +31,16 @@ def make_parser():
         action="store_true",
         help="Make int8 tensorrt engine",
     )
+    parser.add_argument(
+        "-f",
+        "--exp_file",
+        default=None,
+        type=str,
+        help="please input your experiment description file",
+    )
     parser.add_argument("-o", "--onnx_path", default=None, type=str, help="path to onnx model")
     parser.add_argument("-c", "--calib_path", default=None, type=str, help="path to calibration files")
+    parser.add_argument("-n", "--name", type=str, default=None, help="model name")
     return parser
 
 
@@ -178,6 +183,14 @@ def build_engine(model_file, max_ws=512*1024*1024, fp16=False, int8=False):
 
 
 args = make_parser().parse_args()
+
+exp = get_exp(args.exp_file, args.name)
+CHANNEL = 3
+HEIGHT = exp.test_size[0]
+WIDTH = exp.test_size[1]
+print(HEIGHT)
+print(WIDTH)
+
 serialized_network = build_engine(args.onnx_path, fp16=args.fp16, int8=args.int8)
 print('saving engine as engine.trt in working directory')
 with open('engine.trt', 'wb') as f:

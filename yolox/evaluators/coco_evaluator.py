@@ -24,6 +24,7 @@ import pycuda.autoinit
 import gc
 
 import json
+import sys
 
 from yolox.data.datasets import COCO_CLASSES, test_coco
 from yolox.layers.fast_coco_eval_api import COCOeval_opt
@@ -206,11 +207,17 @@ class COCOEvaluator:
                     outputs = model(imgs) # outputs size =  torch.Size([1, 8400, 85])
 
                 elif onnx2trt:
-                    input_shape = tuple(map(int, "640,640".split(',')))
+                    input_shape = test_size
 
                     # Input and output buffer okay?
                     input_buffer = np.ascontiguousarray(imgs.cpu())
-                    output_buffer = torch.zeros(1, 8400, 85).cpu().detach().numpy()
+                    if(input_shape == (640,640)):
+                        output_buffer = torch.zeros(1, 8400, 85).cpu().detach().numpy()
+                    elif(input_shape == (416,416)):
+                        output_buffer = torch.zeros(1, 3549, 85).cpu().detach().numpy()
+                    else:
+                        print('UNSUPPORTED INPUT SHAPE = ', input_shape)
+                        sys.exit()
 
                     imgs_memory = cuda.mem_alloc(input_buffer.nbytes)
                     output_memory = cuda.mem_alloc(output_buffer.nbytes)
@@ -230,7 +237,7 @@ class COCOEvaluator:
                     outputs = output_buffer
 
                 else:
-                    input_shape = tuple(map(int, "640,640".split(',')))
+                    input_shape = test_size
                     ort_imgs = imgs[0].cpu().numpy()
 
                     ort_imgs = {session.get_inputs()[0].name: ort_imgs[None, :, :, :]}

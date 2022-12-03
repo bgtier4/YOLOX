@@ -194,7 +194,7 @@ class COCOEvaluator:
             print('setting up tvm...')
             # first, get torchscript model
             model = model.eval()
-            input_data = torch.randn([1, 3, 640, 640]) # TODO: fix for light models
+            input_data = torch.randn([1, 3, 640, 640]).to('cuda') # TODO: fix for light models
             scripted_model = torch.jit.trace(model, input_data).eval()
 
             # then, prep tvm

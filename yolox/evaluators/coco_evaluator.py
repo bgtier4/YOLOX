@@ -30,7 +30,7 @@ import tvm
 from tvm import relay
 from tvm.contrib import graph_executor
 
-from yolox.data.datasets import COCO_CLASSES, test_coco
+from yolox.data.datasets import COCO_CLASSES #,  test_coco
 from yolox.layers.fast_coco_eval_api import COCOeval_opt
 from yolox.utils import (
     gather,
@@ -146,6 +146,9 @@ class COCOEvaluator:
             ap50 (float) : COCO AP of IoU=50
             summary (sr): summary info of evaluation.
         """
+        print('onnx =', onnx)
+        print('onnx2trt =', onnx2trt)
+        print('tvmeval =', tvmeval)
         # TODO half to amp_test
         tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
 
@@ -188,9 +191,10 @@ class COCOEvaluator:
             session = onnxruntime.InferenceSession(onnx_path, providers=['CUDAExecutionProvider'])
             model = session
         elif tvmeval: # TODO: Implement tvm here
+            print('setting up tvm...')
             # first, get torchscript model
             model = model.eval()
-            input_data = torch.randn([1, 3, 640, 640]) # TODO: fix for light models            
+            input_data = torch.randn([1, 3, 640, 640]) # TODO: fix for light models
             scripted_model = torch.jit.trace(model, input_data).eval()
 
             # then, prep tvm
@@ -246,7 +250,7 @@ class COCOEvaluator:
 
                     # Transfer input data from python buffers to device(GPU)
                     cuda.memcpy_htod_async(imgs_memory, input_buffer, stream)
-                    
+
                     context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
 
                     cuda.memcpy_dtoh_async(output_buffer, output_memory, stream)
@@ -266,6 +270,7 @@ class COCOEvaluator:
                     dtype = "float32" # TODO: change to support other dtypes
                     m = graph_executor.GraphModule(lib["default"],(dev))
                     m.set_input(input_name, tvm.nd.array(imgs.astype(dtype))) # TODO: what about for multiple images
+                    print('running tvm model...')
                     m.run()
                     outputs = m.get_output(0)
 

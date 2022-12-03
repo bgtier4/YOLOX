@@ -213,7 +213,7 @@ def main(exp, args, num_gpu):
 
     # start evaluate
     print('start evaluate')
-    if not args.onnx and not args.onnx2trt: # NEW CHANGE
+    if not args.onnx and not args.onnx2trt and not args.tvmeval: # NEW CHANGE
         *_, summary = evaluator.evaluate(
             model, is_distributed, args.fp16, trt_file, decoder, exp.test_size
         )

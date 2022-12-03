@@ -130,7 +130,7 @@ class COCOEvaluator:
 
     def evaluate(
         self, model, distributed=False, half=False, trt_file=None,
-        decoder=None, test_size=None, return_outputs=False, onnx=False, onnx_path="", onnx2trt=False, engine_file_path="", tvmrun=False # NEW CHANGE
+        decoder=None, test_size=None, return_outputs=False, onnx=False, onnx_path="", onnx2trt=False, engine_file_path="", tvmeval=False # NEW CHANGE
     ):
         """
         COCO average precision (AP) Evaluation. Iterate inference on the test dataset
@@ -157,7 +157,7 @@ class COCOEvaluator:
         inference_time = 0
         nms_time = 0
         n_samples = max(len(self.dataloader) - 1, 1)
-        if not onnx and not onnx2trt and not tvmrun: # NEW CHANGE
+        if not onnx and not onnx2trt and not tvmeval: # NEW CHANGE
             model = model.eval()
             if half:
                 model = model.half()
@@ -187,7 +187,7 @@ class COCOEvaluator:
             assert(len(onnx_path) > 0), "Onnx model path was not specified!"
             session = onnxruntime.InferenceSession(onnx_path, providers=['CUDAExecutionProvider'])
             model = session
-        elif tvmrun: # TODO: Implement tvm here
+        elif tvmeval: # TODO: Implement tvm here
             # first, get torchscript model
             model = model.eval()
             input_data = torch.randn([1, 3, 640, 640]) # TODO: fix for light models            
@@ -222,7 +222,7 @@ class COCOEvaluator:
                     start = time.time()
 
                 # NEW CHANGE
-                if not onnx and not onnx2trt and not tvmrun:
+                if not onnx and not onnx2trt and not tvmeval:
                     outputs = model(imgs) # outputs size =  torch.Size([1, 8400, 85])
 
                 elif onnx2trt:
@@ -262,7 +262,7 @@ class COCOEvaluator:
                     ort_imgs = {session.get_inputs()[0].name: ort_imgs[None, :, :, :]}
                     outputs = model.run(None, ort_imgs)
 
-                elif tvmrun: # TODO: Implement tvm support here
+                elif tvmeval: # TODO: Implement tvm support here
                     dtype = "float32" # TODO: change to support other dtypes
                     m = graph_executor.GraphModule(lib["default"],(dev))
                     m.set_input(input_name, tvm.nd.array(imgs.astype(dtype))) # TODO: what about for multiple images
@@ -277,13 +277,13 @@ class COCOEvaluator:
                     inference_time += infer_end - start
 
                 # NEW CHANGE
-                if not onnx and not onnx2trt and not tvmrun:
+                if not onnx and not onnx2trt and not tvmeval:
                     outputs = postprocess(
                         outputs, self.num_classes, self.confthre, self.nmsthre
                     )
                 else:
                     # TODO: Implement tvm here?
-                    if onnx2trt or tvmrun:
+                    if onnx2trt or tvmeval:
                         predictions = demo_postprocess(outputs, input_shape, p6=False)[0]
                     else:
                         predictions = demo_postprocess(outputs[0], input_shape, p6=False)[0]
@@ -308,7 +308,7 @@ class COCOEvaluator:
                     nms_time += nms_end - infer_end
 
             # NEW CHANGE
-            if not onnx and not onnx2trt and not tvmrun:
+            if not onnx and not onnx2trt and not tvmeval:
                 data_list_elem, image_wise_data = self.convert_to_coco_format(
                     outputs, info_imgs, ids, return_outputs=True)
             else: # TODO: Implement tvm here?

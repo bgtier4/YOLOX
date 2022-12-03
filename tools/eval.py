@@ -124,6 +124,13 @@ def make_parser():
         action="store_true",
         help="Configure evaluation to evaluate tensorrt model converted from onnx.",
     )
+    parser.add_argument(
+        "--tvmeval",
+        dest="tvmeval",
+        default=False,
+        action="store_true",
+        help="Configure evaluation to evaluate with tvm",
+    )
     return parser
 
 
@@ -214,9 +221,13 @@ def main(exp, args, num_gpu):
         *_, summary = evaluator.evaluate(
             model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, onnx2trt=True, engine_file_path=args.ckpt
         )
-    else:
+    elif args.onnx:
         *_, summary = evaluator.evaluate(
             model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, onnx=True, onnx_path=args.ckpt
+        )
+    elif args.tvmeval:
+        *_, summary = evaluator.evaluate(
+            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, tvmeval=True
         )
 
     logger.info("\n" + summary)

@@ -192,20 +192,24 @@ class COCOEvaluator:
             model = session
         elif tvmeval: # TODO: Implement tvm here
             print('setting up tvm...')
-            # first, get torchscript model
-            model = model.eval()
-            input_data = torch.randn([1, 3, 640, 640]).to('cuda') # TODO: fix for light models
-            scripted_model = torch.jit.trace(model, input_data).eval()
 
             # then, prep tvm
             input_name = "images"
-            shape_list = [(input_name, [1, 3, 640, 640])] # TODO: fix for light models
-            mod, params = relay.frontend.from_pytorch(scripted_model, shape_list)
+            shape_list = {input_name : (1, 3, 640, 640)} # TODO: fix for light models
+            print("onnx path = ", onnx_path)
+            import onnx as onnx4tvm
+            onnx_model = onnx4tvm.load(onnx_path)
+            
+            mod, params = relay.frontend.from_onnx(onnx_model, shape_list)
 
-            target = tvm.target.Target("cuda", host="cuda")
+            # need to quantize model?
+            # with relay.quantize.qconfig(calibrate_mode="global_scale", global_scale=8.0):
+            #     mod = relay.quantize.quantize(mod, params)
+
+            target = 'cuda'
             dev = tvm.cuda(0)
-            with tvm.transform.PassCOntext(opt_level=3):
-                lib = relay.build(mod, target=target, params=params)
+            with tvm.autotvm.apply_history_best('../myscripts/yolox/yolox-cuda-autotuner_records-long.json'):    
+                model = relay.create_executor("vm", mod, dev, target).evaluate()
 
         # to avoid cuda out of memory error
         print('emptying cache...')
@@ -267,12 +271,9 @@ class COCOEvaluator:
                     outputs = model.run(None, ort_imgs)
 
                 elif tvmeval: # TODO: Implement tvm support here
-                    dtype = "float32" # TODO: change to support other dtypes
-                    m = graph_executor.GraphModule(lib["default"],(dev))
-                    m.set_input(input_name, tvm.nd.array(imgs.astype(dtype))) # TODO: what about for multiple images
-                    print('running tvm model...')
-                    m.run()
-                    outputs = m.get_output(0)
+                    input_shape = test_size
+                    tvm_imgs = np.expand_dims(imgs[0].cpu().numpy(), axis=0)
+                    outputs = model(tvm_imgs).numpy()
 
                 if decoder is not None:
                     outputs = decoder(outputs, dtype=outputs.type())

@@ -28,6 +28,9 @@ def make_parser():
     parser.add_argument(
         "-o", "--opset", default=11, type=int, help="onnx opset version"
     )
+    parser.add_argument(
+        "-p", "--precision", default='fp32', type=str, help="onnx opset version"
+    )
     parser.add_argument("--batch-size", type=int, default=1, help="batch size")
     parser.add_argument(
         "--dynamic", action="store_true", help="whether the input shape should be dynamic or not"
@@ -78,7 +81,7 @@ def main():
     # load the model state dict
     ckpt = torch.load(ckpt_file, map_location="cpu")
 
-    model.eval()
+    model.eval().to(args.precision)
     if "model" in ckpt:
         ckpt = ckpt["model"]
     model.load_state_dict(ckpt)
@@ -86,7 +89,7 @@ def main():
     model.head.decode_in_inference = args.decode_in_inference
 
     logger.info("loading checkpoint done.")
-    dummy_input = torch.randn(args.batch_size, 3, exp.test_size[0], exp.test_size[1])
+    dummy_input = torch.randn(args.batch_size, 3, exp.test_size[0], exp.test_size[1]).to(args.precision)
 
     torch.onnx._export(
         model,

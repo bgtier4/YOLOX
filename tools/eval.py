@@ -179,7 +179,7 @@ def main(exp, args, num_gpu):
     model.cuda(rank)
     model.eval()
 
-    if not args.speed and not args.trt and not args.onnx and not args.onnx2trt: # NEW CHANGE
+    if not args.speed and not args.trt and not args.onnx and not args.onnx2trt and not args.tvmeval: # NEW CHANGE
         if args.ckpt is None:
             ckpt_file = os.path.join(file_name, "best_ckpt.pth")
         else:
@@ -227,7 +227,7 @@ def main(exp, args, num_gpu):
         )
     elif args.tvmeval:
         *_, summary = evaluator.evaluate(
-            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, tvmeval=True
+            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, tvmeval=True, onnx_path=args.ckpt
         )
 
     logger.info("\n" + summary)

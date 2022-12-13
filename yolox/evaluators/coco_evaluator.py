@@ -25,10 +25,14 @@ import gc
 
 import json
 import sys
+from os import path
 
 import tvm
 from tvm import relay
 from tvm.contrib import graph_executor
+from tvm.relay.transform import InferType, ToMixedPrecision, mixed_precision
+from tvm.driver import tvmc
+from tvm.driver.tvmc.model import TVMCModel
 
 from yolox.data.datasets import COCO_CLASSES #,  test_coco
 from yolox.layers.fast_coco_eval_api import COCOeval_opt
@@ -130,7 +134,8 @@ class COCOEvaluator:
 
     def evaluate(
         self, model, distributed=False, half=False, trt_file=None,
-        decoder=None, test_size=None, return_outputs=False, onnx=False, onnx_path="", onnx2trt=False, engine_file_path="", tvmeval=False, tuning_records="" # NEW CHANGE
+        decoder=None, test_size=None, return_outputs=False, onnx=False, onnx_path="",
+        onnx2trt=False, engine_file_path="", tvmeval=False, tuning_records=""
     ):
         """
         COCO average precision (AP) Evaluation. Iterate inference on the test dataset
@@ -200,15 +205,37 @@ class COCOEvaluator:
             onnx_model = onnx4tvm.load(onnx_path)
             mod, params = relay.frontend.from_onnx(onnx_model, shape_list)
 
-            #mod = tvm.relay.transform.ToMixedPrecision(mixed_precision_type='float16')(mod)
+            if half:
+                mod = tvm.relay.transform.ToMixedPrecision(mixed_precision_type='float16')(mod)
 
             target = 'cuda'
             dev = tvm.cuda(0)
-            if args.tuning_records != "":
-                with tvm.autotvm.apply_history_best(args.tuning_records):    
-                    model = relay.build_module.create_executor("vm", mod, dev, target).evaluate()
-            else:
-                model = relay.build_module.create_executor("vm", mod, dev, target).evaluate()
+            # if tuning_records != "":
+            #     with tvm.autotvm.apply_history_best(tuning_records):    
+            #         model = relay.build_module.create_executor("vm", mod, dev, target).evaluate()
+            # else:
+            #     model = relay.build_module.create_executor("vm", mod, dev, target).evaluate()
+
+            with tvm.transform.PassContext(opt_level=3):
+                lib = relay.build(mod, target=target, params=params)
+
+            
+            module = graph_executor.GraphModule(lib["default"](dev))
+
+            # TRY SETTING UP TVM LIKE FP16 EXAMPLE GITHUB
+            # tvmc_model = tvmc.load(onnx_path)
+            # mod, params = graph_optimize(tvmc_model, run_fp16_pass=True, run_other_opts=False, fast_math=True)
+            
+            # tvmc_model = TVMCModel(mod, params)
+            # package = tvmc.compile(tvmc_model, target='cuda')
+
+            # target = 'cuda'
+            # dev = tvm.cuda(0)
+            # if tuning_records != "":
+            #     with tvm.autotvm.apply_history_best(tuning_records):    
+            #         model = relay.build_module.create_executor("vm", mod, dev, target).evaluate()
+            # else:
+            #     model = relay.build_module.create_executor("vm", mod, dev, target).evaluate()
 
 
         # to avoid cuda out of memory error
@@ -273,7 +300,20 @@ class COCOEvaluator:
                 elif tvmeval: # TODO: Implement tvm support here
                     input_shape = test_size
                     tvm_imgs = np.expand_dims(imgs[0].cpu().numpy(), axis=0)
-                    outputs = model(tvm_imgs).numpy()
+                    # outputs = model(tvm_imgs).numpy()
+                    # outputs = tvmc.run(
+                    #     package,
+                    #     device='cuda',
+                    #     inputs=tvm_imgs
+                    # )
+                    dtype = 'float32'
+                    if half:
+                        dtype = 'float16' # TODO: make this customizable
+                    #print('input size = ', tvm_imgs.shape)
+                    module.set_input(input_name, tvm_imgs)
+                    module.run()
+                    output_shape = (1, 8400, 85) # TODO: does this work for light models?
+                    outputs = module.get_output(0, tvm.nd.empty(output_shape, dtype, device=dev)).numpy().astype(np.float32)
 
                 if decoder is not None:
                     outputs = decoder(outputs, dtype=outputs.type())
@@ -494,3 +534,45 @@ class COCOEvaluator:
         if return_outputs:
             return data_list, image_wise_data
         return data_list
+
+def graph_optimize(tvmc_model, run_fp16_pass, run_other_opts, fast_math=True):
+    mod, params = tvmc_model.mod, tvmc_model.params
+    # Weird functions we don't use are in there it's weird
+    mod = tvm.IRModule.from_expr(mod["main"])
+
+    passes = []
+
+    if run_other_opts:
+        passes.append(tvm.relay.transform.EliminateCommonSubexpr()(mod))
+        passes.append(
+            tvm.relay.transform.function_pass(
+                lambda fn, new_mod, ctx: tvm.relay.build_module.bind_params_by_name(
+                    fn, params
+                ),
+                opt_level=1,
+            )
+        )
+        passes.append(tvm.relay.transform.FoldConstant()(mod))
+        passes.append(tvm.relay.transform.CombineParallelBatchMatmul()(mod))
+        passes.append(tvm.relay.transform.FoldConstant()(mod))
+
+    if run_fp16_pass:
+        passes.append(InferType())
+        passes.append(ToMixedPrecision())
+
+    if run_other_opts and run_fp16_pass:
+        # run one more pass to clean up new subgraph
+        passes.append(tvm.relay.transform.EliminateCommonSubexpr())
+        passes.append(tvm.relay.transform.FoldConstant())
+        passes.append(tvm.relay.transform.CombineParallelBatchMatmul())
+        passes.append(tvm.relay.transform.FoldConstant())
+
+        if fast_math:
+            passes.append(tvm.relay.transform.FastMath())
+
+    mod = tvm.transform.Sequential(passes)(mod)
+
+    return mod, params
+
+def load_model(name, **kwargs):
+    return tvmc.load(path.join("./models", name), **kwargs)

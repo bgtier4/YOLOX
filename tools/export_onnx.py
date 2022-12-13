@@ -81,7 +81,9 @@ def main():
     # load the model state dict
     ckpt = torch.load(ckpt_file, map_location="cpu")
 
-    model.eval().to(args.precision)
+    model.eval()
+    if args.precision == 'fp16':
+        model.half()
     if "model" in ckpt:
         ckpt = ckpt["model"]
     model.load_state_dict(ckpt)
@@ -89,7 +91,9 @@ def main():
     model.head.decode_in_inference = args.decode_in_inference
 
     logger.info("loading checkpoint done.")
-    dummy_input = torch.randn(args.batch_size, 3, exp.test_size[0], exp.test_size[1]).to(args.precision)
+    dummy_input = torch.randn(args.batch_size, 3, exp.test_size[0], exp.test_size[1])
+    if args.precision == 'fp16':
+        dummy_input = dummy_input.half()
 
     torch.onnx._export(
         model,

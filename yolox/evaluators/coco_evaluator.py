@@ -130,7 +130,7 @@ class COCOEvaluator:
 
     def evaluate(
         self, model, distributed=False, half=False, trt_file=None,
-        decoder=None, test_size=None, return_outputs=False, onnx=False, onnx_path="", onnx2trt=False, engine_file_path="", tvmeval=False # NEW CHANGE
+        decoder=None, test_size=None, return_outputs=False, onnx=False, onnx_path="", onnx2trt=False, engine_file_path="", tvmeval=False, tuning_records="" # NEW CHANGE
     ):
         """
         COCO average precision (AP) Evaluation. Iterate inference on the test dataset
@@ -193,23 +193,23 @@ class COCOEvaluator:
         elif tvmeval: # TODO: Implement tvm here
             print('setting up tvm...')
 
-            # then, prep tvm
+            # prep tvm
             input_name = "images"
-            shape_list = {input_name : (1, 3, 640, 640)} # TODO: fix for light models
-            print("onnx path = ", onnx_path)
+            shape_list = {input_name : (1, 3, test_size[0], test_size[1])} # TODO: fix for light models
             import onnx as onnx4tvm
             onnx_model = onnx4tvm.load(onnx_path)
-            
             mod, params = relay.frontend.from_onnx(onnx_model, shape_list)
 
-            # need to quantize model?
-            # with relay.quantize.qconfig(calibrate_mode="global_scale", global_scale=8.0):
-            #     mod = relay.quantize.quantize(mod, params)
+            #mod = tvm.relay.transform.ToMixedPrecision(mixed_precision_type='float16')(mod)
 
             target = 'cuda'
             dev = tvm.cuda(0)
-            with tvm.autotvm.apply_history_best('../myscripts/yolox/yolox-cuda-autotuner_records-long.json'):    
-                model = relay.create_executor("vm", mod, dev, target).evaluate()
+            if args.tuning_records != "":
+                with tvm.autotvm.apply_history_best(args.tuning_records):    
+                    model = relay.build_module.create_executor("vm", mod, dev, target).evaluate()
+            else:
+                model = relay.build_module.create_executor("vm", mod, dev, target).evaluate()
+
 
         # to avoid cuda out of memory error
         print('emptying cache...')

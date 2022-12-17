@@ -195,12 +195,13 @@ class COCOEvaluator:
             assert(len(onnx_path) > 0), "Onnx model path was not specified!"
             session = onnxruntime.InferenceSession(onnx_path, providers=['CUDAExecutionProvider'])
             model = session
-        elif tvmeval: # TODO: Implement tvm here
+        elif tvmeval: 
             print('setting up tvm...')
 
             # prep tvm
             input_name = "images"
-            shape_list = {input_name : (1, 3, test_size[0], test_size[1])} # TODO: fix for light models
+            shape_list = {input_name : (1, 3, test_size[0], test_size[1])}
+            
             import onnx as onnx4tvm
             onnx_model = onnx4tvm.load(onnx_path)
             mod, params = relay.frontend.from_onnx(onnx_model, shape_list)
@@ -210,32 +211,10 @@ class COCOEvaluator:
 
             target = 'cuda'
             dev = tvm.cuda(0)
-            # if tuning_records != "":
-            #     with tvm.autotvm.apply_history_best(tuning_records):    
-            #         model = relay.build_module.create_executor("vm", mod, dev, target).evaluate()
-            # else:
-            #     model = relay.build_module.create_executor("vm", mod, dev, target).evaluate()
-
             with tvm.transform.PassContext(opt_level=3):
                 lib = relay.build(mod, target=target, params=params)
 
-            
             module = graph_executor.GraphModule(lib["default"](dev))
-
-            # TRY SETTING UP TVM LIKE FP16 EXAMPLE GITHUB
-            # tvmc_model = tvmc.load(onnx_path)
-            # mod, params = graph_optimize(tvmc_model, run_fp16_pass=True, run_other_opts=False, fast_math=True)
-            
-            # tvmc_model = TVMCModel(mod, params)
-            # package = tvmc.compile(tvmc_model, target='cuda')
-
-            # target = 'cuda'
-            # dev = tvm.cuda(0)
-            # if tuning_records != "":
-            #     with tvm.autotvm.apply_history_best(tuning_records):    
-            #         model = relay.build_module.create_executor("vm", mod, dev, target).evaluate()
-            # else:
-            #     model = relay.build_module.create_executor("vm", mod, dev, target).evaluate()
 
 
         # to avoid cuda out of memory error
@@ -295,24 +274,19 @@ class COCOEvaluator:
                     ort_imgs = imgs[0].cpu().numpy()
 
                     ort_imgs = {session.get_inputs()[0].name: ort_imgs[None, :, :, :]}
-                    outputs = model.run(None, ort_imgs)
+                    outputs = model.run(None, ort_imgs)[0]
 
-                elif tvmeval: # TODO: Implement tvm support here
+                elif tvmeval: 
                     input_shape = test_size
                     tvm_imgs = np.expand_dims(imgs[0].cpu().numpy(), axis=0)
-                    # outputs = model(tvm_imgs).numpy()
-                    # outputs = tvmc.run(
-                    #     package,
-                    #     device='cuda',
-                    #     inputs=tvm_imgs
-                    # )
+ 
                     dtype = 'float32'
                     if half:
-                        dtype = 'float16' # TODO: make this customizable
-                    #print('input size = ', tvm_imgs.shape)
+                        dtype = 'float16'
+
                     module.set_input(input_name, tvm_imgs)
                     module.run()
-                    output_shape = (1, 8400, 85) # TODO: does this work for light models?
+                    output_shape = (1, 8400, 85) # this works for light models too
                     outputs = module.get_output(0, tvm.nd.empty(output_shape, dtype, device=dev)).numpy().astype(np.float32)
 
                 if decoder is not None:
@@ -328,11 +302,8 @@ class COCOEvaluator:
                         outputs, self.num_classes, self.confthre, self.nmsthre
                     )
                 else:
-                    # TODO: Implement tvm here?
                     if onnx2trt or tvmeval:
                         predictions = demo_postprocess(outputs, input_shape, p6=False)[0]
-                    else:
-                        predictions = demo_postprocess(outputs[0], input_shape, p6=False)[0]
 
                     boxes = predictions[:, :4]
                     scores = predictions[:, 4:5] * predictions[:, 5:]
@@ -357,7 +328,7 @@ class COCOEvaluator:
             if not onnx and not onnx2trt and not tvmeval:
                 data_list_elem, image_wise_data = self.convert_to_coco_format(
                     outputs, info_imgs, ids, return_outputs=True)
-            else: # TODO: Implement tvm here?
+            else:
                 data_list_elem, image_wise_data = self.convert_to_coco_format_onnx(
                     outputs, info_imgs, ids, return_outputs=True)
             data_list.extend(data_list_elem)
@@ -542,19 +513,19 @@ def graph_optimize(tvmc_model, run_fp16_pass, run_other_opts, fast_math=True):
 
     passes = []
 
-    if run_other_opts:
-        passes.append(tvm.relay.transform.EliminateCommonSubexpr()(mod))
-        passes.append(
-            tvm.relay.transform.function_pass(
-                lambda fn, new_mod, ctx: tvm.relay.build_module.bind_params_by_name(
-                    fn, params
-                ),
-                opt_level=1,
-            )
-        )
-        passes.append(tvm.relay.transform.FoldConstant()(mod))
-        passes.append(tvm.relay.transform.CombineParallelBatchMatmul()(mod))
-        passes.append(tvm.relay.transform.FoldConstant()(mod))
+    # if run_other_opts:
+    #     passes.append(tvm.relay.transform.EliminateCommonSubexpr()(mod))
+    #     passes.append(
+    #         tvm.relay.transform.function_pass(
+    #             lambda fn, new_mod, ctx: tvm.relay.build_module.bind_params_by_name(
+    #                 fn, params
+    #             ),
+    #             opt_level=1,
+    #         )
+    #     )
+    #     passes.append(tvm.relay.transform.FoldConstant()(mod))
+    #     passes.append(tvm.relay.transform.CombineParallelBatchMatmul()(mod))
+    #     passes.append(tvm.relay.transform.FoldConstant()(mod))
 
     if run_fp16_pass:
         passes.append(InferType())

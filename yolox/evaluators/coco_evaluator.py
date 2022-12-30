@@ -135,7 +135,7 @@ class COCOEvaluator:
     def evaluate(
         self, model, distributed=False, half=False, trt_file=None,
         decoder=None, test_size=None, return_outputs=False, onnx=False, onnx_path="",
-        onnx2trt=False, engine_file_path="", tvmeval=False, tuning_records=""
+        onnx2trt=False, engine_file_path="", tvmeval=False, tuning_records="", int8=False
     ):
         """
         COCO average precision (AP) Evaluation. Iterate inference on the test dataset
@@ -165,56 +165,28 @@ class COCOEvaluator:
         inference_time = 0
         nms_time = 0
         n_samples = max(len(self.dataloader) - 1, 1)
-        if not onnx and not onnx2trt and not tvmeval: # NEW CHANGE
-            model = model.eval()
-            if half:
-                model = model.half()
 
-            if trt_file is not None:
-                from torch2trt import TRTModule
+        input_shape = test_size
+        if(input_shape == (640,640)):
+            output_shape = (1, 8400, 85)
+        elif(input_shape == (416,416)):
+            output_shape = (1, 3549, 85)
 
-                model_trt = TRTModule()
-                model_trt.load_state_dict(torch.load(trt_file))
+        dtype = 'float32'
+        if half:
+            dtype = 'float16'
+        if int8:
+            dtype = 'int8'
 
-                x = torch.ones(1, 3, test_size[0], test_size[1]).cuda()
-                model(x)
-                model = model_trt
-        # NEW CHANGE
+        # setup model
+        if onnx:
+            model = self.setup_onnx(onnx_path)
         elif onnx2trt:
-            assert(len(engine_file_path) > 0), "Engine file path was not specified!"
-            TRT_LOGGER = trt.Logger()
-            runtime = trt.Runtime(TRT_LOGGER)
-            with open(engine_file_path, 'rb') as f:
-                print('reading ', engine_file_path,'...')
-                engine_bytes = f.read()
-                engine = runtime.deserialize_cuda_engine(engine_bytes)
-                print('engine deserialized')
-            context = engine.create_execution_context()
-            print('engine context created')
-        elif onnx:
-            assert(len(onnx_path) > 0), "Onnx model path was not specified!"
-            session = onnxruntime.InferenceSession(onnx_path, providers=['CUDAExecutionProvider'])
-            model = session
+            context = self.setup_trt(engine_file_path)
         elif tvmeval: 
-            print('setting up tvm...')
-
-            # prep tvm
-            input_name = "images"
-            shape_list = {input_name : (1, 3, test_size[0], test_size[1])}
-            
-            import onnx as onnx4tvm
-            onnx_model = onnx4tvm.load(onnx_path)
-            mod, params = relay.frontend.from_onnx(onnx_model, shape_list)
-
-            if half:
-                mod = tvm.relay.transform.ToMixedPrecision(mixed_precision_type='float16')(mod)
-
-            target = 'cuda'
-            dev = tvm.cuda(0)
-            with tvm.transform.PassContext(opt_level=3):
-                lib = relay.build(mod, target=target, params=params)
-
-            module = graph_executor.GraphModule(lib["default"](dev))
+            module = self.setup_tvm(onnx_path, test_size, tuning_records, half, int8)
+        else:
+            model = self.setup_base(model, half, trt_file, test_size)
 
 
         # to avoid cuda out of memory error
@@ -228,66 +200,22 @@ class COCOEvaluator:
         ):
 
             with torch.no_grad():
-                imgs = imgs.type(tensor_type) # imgs size =  torch.Size([1, 3, 640, 640])
+                imgs = imgs.type(tensor_type)
 
                 # skip the last iters since batchsize might be not enough for batch inference
                 is_time_record = cur_iter < len(self.dataloader) - 1
                 if is_time_record:
                     start = time.time()
 
-                # NEW CHANGE
-                if not onnx and not onnx2trt and not tvmeval:
-                    outputs = model(imgs) # outputs size =  torch.Size([1, 8400, 85])
-
+                # run inference
+                if onnx:
+                    outputs = self.get_outputs_onnx(imgs, model)
                 elif onnx2trt:
-                    input_shape = test_size
-
-                    # Input and output buffer okay?
-                    input_buffer = np.ascontiguousarray(imgs.cpu())
-                    if(input_shape == (640,640)):
-                        output_buffer = torch.zeros(1, 8400, 85).cpu().detach().numpy()
-                    elif(input_shape == (416,416)):
-                        output_buffer = torch.zeros(1, 3549, 85).cpu().detach().numpy()
-                    else:
-                        print('UNSUPPORTED INPUT SHAPE = ', input_shape)
-                        sys.exit()
-
-                    imgs_memory = cuda.mem_alloc(input_buffer.nbytes)
-                    output_memory = cuda.mem_alloc(output_buffer.nbytes)
-                    bindings = [int(imgs_memory), int(output_memory)]
-
-                    stream = cuda.Stream()
-
-                    # Transfer input data from python buffers to device(GPU)
-                    cuda.memcpy_htod_async(imgs_memory, input_buffer, stream)
-
-                    context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
-
-                    cuda.memcpy_dtoh_async(output_buffer, output_memory, stream)
-
-                    stream.synchronize()
-
-                    outputs = output_buffer
-
-                elif onnx:
-                    input_shape = test_size
-                    ort_imgs = imgs[0].cpu().numpy()
-
-                    ort_imgs = {session.get_inputs()[0].name: ort_imgs[None, :, :, :]}
-                    outputs = model.run(None, ort_imgs)[0]
-
+                    outputs = self.get_outputs_trt(imgs, context, output_shape)
                 elif tvmeval: 
-                    input_shape = test_size
-                    tvm_imgs = np.expand_dims(imgs[0].cpu().numpy(), axis=0)
- 
-                    dtype = 'float32'
-                    if half:
-                        dtype = 'float16'
-
-                    module.set_input(input_name, tvm_imgs)
-                    module.run()
-                    output_shape = (1, 8400, 85) # this works for light models too
-                    outputs = module.get_output(0, tvm.nd.empty(output_shape, dtype, device=dev)).numpy().astype(np.float32)
+                    outputs = self.get_outputs_tvm(imgs, module, output_shape, dtype)
+                else:
+                    outputs = model(imgs)
 
                 if decoder is not None:
                     outputs = decoder(outputs, dtype=outputs.type())
@@ -296,14 +224,13 @@ class COCOEvaluator:
                     infer_end = time_synchronized()
                     inference_time += infer_end - start
 
-                # NEW CHANGE
+                # postprocessing
                 if not onnx and not onnx2trt and not tvmeval:
                     outputs = postprocess(
                         outputs, self.num_classes, self.confthre, self.nmsthre
                     )
                 else:
-                    if onnx2trt or tvmeval:
-                        predictions = demo_postprocess(outputs, input_shape, p6=False)[0]
+                    predictions = demo_postprocess(outputs, input_shape, p6=False)[0]
 
                     boxes = predictions[:, :4]
                     scores = predictions[:, 4:5] * predictions[:, 5:]
@@ -324,7 +251,7 @@ class COCOEvaluator:
                     nms_end = time_synchronized()
                     nms_time += nms_end - infer_end
 
-            # NEW CHANGE
+            # convert to coco format
             if not onnx and not onnx2trt and not tvmeval:
                 data_list_elem, image_wise_data = self.convert_to_coco_format(
                     outputs, info_imgs, ids, return_outputs=True)
@@ -349,6 +276,122 @@ class COCOEvaluator:
         if return_outputs:
             return eval_results, output_data
         return eval_results
+
+
+    # model setup functions
+    def setup_base(self, model, half, trt_file, test_size):
+        print(type(model))
+        print(model)
+        model = model.eval()
+        if half:
+            model = model.half()
+
+        if trt_file is not None:
+            from torch2trt import TRTModule
+
+            model_trt = TRTModule()
+            model_trt.load_state_dict(torch.load(trt_file))
+
+            x = torch.ones(1, 3, test_size[0], test_size[1]).cuda()
+            model(x)
+            model = model_trt
+
+        return model
+
+
+    def setup_onnx(self, onnx_path):
+        assert(len(onnx_path) > 0), "Onnx model path was not specified!"
+        session = onnxruntime.InferenceSession(onnx_path, providers=['CUDAExecutionProvider'])
+        return session
+
+
+    def setup_trt(self, engine_file_path):
+        assert(len(engine_file_path) > 0), "Engine file path was not specified!"
+        TRT_LOGGER = trt.Logger()
+        runtime = trt.Runtime(TRT_LOGGER)
+        with open(engine_file_path, 'rb') as f:
+            print('reading ', engine_file_path,'...')
+            engine_bytes = f.read()
+            engine = runtime.deserialize_cuda_engine(engine_bytes)
+            print('engine deserialized')
+        context = engine.create_execution_context()
+        print('engine context created')
+        return context
+
+
+    def setup_tvm(self, onnx_path, test_size, tuning_records, half, int8):
+        print('setting up tvm...')
+
+        # prep tvm
+        input_name = "images"
+        shape_list = {input_name : (1, 3, test_size[0], test_size[1])}
+        
+        import onnx as onnx4tvm
+        onnx_model = onnx4tvm.load(onnx_path)
+        mod, params = relay.frontend.from_onnx(onnx_model, shape_list)
+
+        if half:
+            mod = tvm.relay.transform.ToMixedPrecision(mixed_precision_type='float16')(mod)
+        elif int8:
+            with relay.quantize.qconfig(calibrate_mode="global_scale", global_scale=8.0):
+                mod = relay.quantize.quantize(mod, params)
+
+        target = 'cuda'
+        dev = tvm.cuda(0)
+        if tuning_records != None:
+            print('tuning records found')
+            with tvm.autotvm.apply_history_best(tuning_records):    
+                with tvm.transform.PassContext(opt_level=3):
+                    lib = relay.build(mod, target=target, params=params)
+        else:
+            with tvm.transform.PassContext(opt_level=3):
+                lib = relay.build(mod, target=target, params=params)
+
+        module = graph_executor.GraphModule(lib["default"](dev))
+
+        return module
+
+    # model inference functions
+    def get_outputs_onnx(self, imgs, model):
+        ort_imgs = imgs[0].cpu().numpy()
+        ort_imgs = {model.get_inputs()[0].name: ort_imgs[None, :, :, :]}
+        
+        return model.run(None, ort_imgs)[0]
+
+    
+    def get_outputs_trt(self, imgs, context, output_shape):
+        # Input and output buffer okay?
+        input_buffer = np.ascontiguousarray(imgs.cpu())
+        output_buffer = torch.zeros(output_shape).cpu().detach().numpy()
+
+        imgs_memory = cuda.mem_alloc(input_buffer.nbytes)
+        output_memory = cuda.mem_alloc(output_buffer.nbytes)
+        bindings = [int(imgs_memory), int(output_memory)]
+
+        stream = cuda.Stream()
+
+        # Transfer input data from python buffers to device(GPU)
+        cuda.memcpy_htod_async(imgs_memory, input_buffer, stream)
+
+        context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
+
+        cuda.memcpy_dtoh_async(output_buffer, output_memory, stream)
+
+        stream.synchronize()
+
+        return output_buffer
+
+
+    def get_outputs_tvm(self, imgs, module, output_shape, dtype):
+        tvm_imgs = np.expand_dims(imgs[0].cpu().numpy(), axis=0)
+        dev = tvm.cuda(0)
+
+        input_name = "images"
+        module.set_input(input_name, tvm_imgs)
+        module.run()
+
+        return module.get_output(0, tvm.nd.empty(output_shape, dtype, device=dev)).numpy().astype(np.float32)
+
 
     def convert_to_coco_format(self, outputs, info_imgs, ids, return_outputs=False):
         data_list = []
@@ -397,6 +440,53 @@ class COCOEvaluator:
         if return_outputs:
             return data_list, image_wise_data
         return data_list
+
+
+    def convert_to_coco_format_onnx(self, outputs, info_imgs, ids, return_outputs=False):
+        data_list = []
+        image_wise_data = defaultdict(dict)
+        for (output, img_h, img_w, img_id) in zip(
+            outputs, info_imgs[0], info_imgs[1], ids
+        ):
+
+            bboxes = output[:, 0:4]
+
+            # preprocessing: resize
+            scale = min(
+                self.img_size[0] / float(img_h), self.img_size[1] / float(img_w)
+            )
+            bboxes /= scale
+            cls = output[:, 5]
+            scores = output[:, 4]
+
+            image_wise_data.update({
+                int(img_id): {
+                    "bboxes": [box.numpy().tolist() for box in bboxes],
+                    "scores": [score.numpy().item() for score in scores],
+                    "categories": [
+                        self.dataloader.dataset.class_ids[int(cls[ind])]
+                        for ind in range(bboxes.shape[0])
+                    ],
+                }
+            })
+
+            bboxes = xyxy2xywh(bboxes)
+            
+            for ind in range(bboxes.shape[0]):
+                label = self.dataloader.dataset.class_ids[int(cls[ind])]
+                pred_data = {
+                    "image_id": int(img_id),
+                    "category_id": label,
+                    "bbox": bboxes[ind].numpy().tolist(),
+                    "score": scores[ind].numpy().item(),
+                    "segmentation": [],
+                }  # COCO json format
+                data_list.append(pred_data)
+
+        if return_outputs:
+            return data_list, image_wise_data
+        return data_list
+
 
     def evaluate_prediction(self, data_dict, statistics):
         if not is_main_process():
@@ -460,90 +550,3 @@ class COCOEvaluator:
             return cocoEval.stats[0], cocoEval.stats[1], info
         else:
             return 0, 0, info
-
-    def convert_to_coco_format_onnx(self, outputs, info_imgs, ids, return_outputs=False):
-        data_list = []
-        image_wise_data = defaultdict(dict)
-        for (output, img_h, img_w, img_id) in zip(
-            outputs, info_imgs[0], info_imgs[1], ids
-        ):
-
-            bboxes = output[:, 0:4]
-
-            # preprocessing: resize
-            scale = min(
-                self.img_size[0] / float(img_h), self.img_size[1] / float(img_w)
-            )
-            bboxes /= scale
-            cls = output[:, 5]
-            scores = output[:, 4]
-
-            image_wise_data.update({
-                int(img_id): {
-                    "bboxes": [box.numpy().tolist() for box in bboxes],
-                    "scores": [score.numpy().item() for score in scores],
-                    "categories": [
-                        self.dataloader.dataset.class_ids[int(cls[ind])]
-                        for ind in range(bboxes.shape[0])
-                    ],
-                }
-            })
-
-            bboxes = xyxy2xywh(bboxes)
-            
-            for ind in range(bboxes.shape[0]):
-                label = self.dataloader.dataset.class_ids[int(cls[ind])]
-                pred_data = {
-                    "image_id": int(img_id),
-                    "category_id": label,
-                    "bbox": bboxes[ind].numpy().tolist(),
-                    "score": scores[ind].numpy().item(),
-                    "segmentation": [],
-                }  # COCO json format
-                data_list.append(pred_data)
-
-        if return_outputs:
-            return data_list, image_wise_data
-        return data_list
-
-def graph_optimize(tvmc_model, run_fp16_pass, run_other_opts, fast_math=True):
-    mod, params = tvmc_model.mod, tvmc_model.params
-    # Weird functions we don't use are in there it's weird
-    mod = tvm.IRModule.from_expr(mod["main"])
-
-    passes = []
-
-    # if run_other_opts:
-    #     passes.append(tvm.relay.transform.EliminateCommonSubexpr()(mod))
-    #     passes.append(
-    #         tvm.relay.transform.function_pass(
-    #             lambda fn, new_mod, ctx: tvm.relay.build_module.bind_params_by_name(
-    #                 fn, params
-    #             ),
-    #             opt_level=1,
-    #         )
-    #     )
-    #     passes.append(tvm.relay.transform.FoldConstant()(mod))
-    #     passes.append(tvm.relay.transform.CombineParallelBatchMatmul()(mod))
-    #     passes.append(tvm.relay.transform.FoldConstant()(mod))
-
-    if run_fp16_pass:
-        passes.append(InferType())
-        passes.append(ToMixedPrecision())
-
-    if run_other_opts and run_fp16_pass:
-        # run one more pass to clean up new subgraph
-        passes.append(tvm.relay.transform.EliminateCommonSubexpr())
-        passes.append(tvm.relay.transform.FoldConstant())
-        passes.append(tvm.relay.transform.CombineParallelBatchMatmul())
-        passes.append(tvm.relay.transform.FoldConstant())
-
-        if fast_math:
-            passes.append(tvm.relay.transform.FastMath())
-
-    mod = tvm.transform.Sequential(passes)(mod)
-
-    return mod, params
-
-def load_model(name, **kwargs):
-    return tvmc.load(path.join("./models", name), **kwargs)

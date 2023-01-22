@@ -135,7 +135,8 @@ class COCOEvaluator:
     def evaluate(
         self, model, distributed=False, half=False, trt_file=None,
         decoder=None, test_size=None, return_outputs=False, onnx=False, onnx_path="",
-        onnx2trt=False, engine_file_path="", tvmeval=False, tuning_records="", int8=False
+        onnx2trt=False, engine_file_path="", tvmeval=False, tuning_records="", int8=False,
+        start_time=0
     ):
         """
         COCO average precision (AP) Evaluation. Iterate inference on the test dataset
@@ -154,6 +155,8 @@ class COCOEvaluator:
         print('onnx =', onnx)
         print('onnx2trt =', onnx2trt)
         print('tvmeval =', tvmeval)
+        print('start time =', start_time)
+
         # TODO half to amp_test
         tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
 
@@ -195,10 +198,12 @@ class COCOEvaluator:
         torch.cuda.empty_cache()
 
 
+        s = []
+        iters_per_s = []
+
         for cur_iter, (imgs, _, info_imgs, ids) in enumerate(
             progress_bar(self.dataloader)
         ):
-
             with torch.no_grad():
                 imgs = imgs.type(tensor_type)
 
@@ -241,7 +246,7 @@ class COCOEvaluator:
                     boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2]/2.
                     boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3]/2.
 
-                    dets = multiclass_nms(boxes_xyxy, scores, nms_thr=0.45, score_thr=0.1)
+                    dets = multiclass_nms(boxes_xyxy, scores, nms_thr=self.nmsthre, score_thr=self.confthre, class_agnostic=False)
                     if dets is None:
                         outputs = []
                     else:
@@ -250,6 +255,8 @@ class COCOEvaluator:
                 if is_time_record:
                     nms_end = time_synchronized()
                     nms_time += nms_end - infer_end
+                    s.append(time.time()-start_time)
+                    iters_per_s.append(1/(nms_end - start))
 
             # convert to coco format
             if not onnx and not onnx2trt and not tvmeval:
@@ -261,7 +268,6 @@ class COCOEvaluator:
             data_list.extend(data_list_elem)
             output_data.update(image_wise_data)
 
-
         statistics = torch.cuda.FloatTensor([inference_time, nms_time, n_samples])
         if distributed:
             data_list = gather(data_list, dst=0)
@@ -270,7 +276,7 @@ class COCOEvaluator:
             output_data = dict(ChainMap(*output_data))
             torch.distributed.reduce(statistics, dst=0)
 
-        eval_results = self.evaluate_prediction(data_list, statistics)
+        eval_results = self.evaluate_prediction(data_list, statistics, s, iters_per_s)
         synchronize()
 
         if return_outputs:
@@ -340,7 +346,8 @@ class COCOEvaluator:
         dev = tvm.cuda(0)
         if tuning_records != None:
             print('tuning records found')
-            with tvm.autotvm.apply_history_best(tuning_records):    
+            #with tvm.autotvm.apply_history_best(tuning_records):  
+            with tvm.auto_scheduler.ApplyHistoryBest(tuning_records):  
                 with tvm.transform.PassContext(opt_level=3):
                     lib = relay.build(mod, target=target, params=params)
         else:
@@ -488,7 +495,7 @@ class COCOEvaluator:
         return data_list
 
 
-    def evaluate_prediction(self, data_dict, statistics):
+    def evaluate_prediction(self, data_dict, statistics, s=None, iters_per_s=None):
         if not is_main_process():
             return 0, 0, None
 
@@ -499,6 +506,17 @@ class COCOEvaluator:
         inference_time = statistics[0].item()
         nms_time = statistics[1].item()
         n_samples = statistics[2].item()
+
+        # add graphing here:
+        if s and iters_per_s:
+            import matplotlib.pyplot as plt
+            plt.plot(s, iters_per_s)
+            plt.xlabel('t (seconds)')
+            plt.ylabel('iterations')
+            plt.title('Inference speed over time')
+            plt.legend()
+            plt.show()
+            plt.savefig('graphs/infer_out.png')
 
         a_infer_time = 1000 * inference_time / (n_samples * self.dataloader.batch_size)
         a_nms_time = 1000 * nms_time / (n_samples * self.dataloader.batch_size)

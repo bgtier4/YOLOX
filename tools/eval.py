@@ -50,6 +50,9 @@ def make_parser():
         "--machine_rank", default=0, type=int, help="node rank for multi-node training"
     )
     parser.add_argument(
+        "--start_time", default=0, type=int, help="start time of program"
+    )
+    parser.add_argument(
         "-f",
         "--exp_file",
         default=None,
@@ -57,6 +60,7 @@ def make_parser():
         help="please input your experiment description file",
     )
     parser.add_argument("-c", "--ckpt", default=None, type=str, help="ckpt for eval")
+    parser.add_argument("-r", "--tuning_records", default=None, type=str, help="tuning records (tvm only)")
     parser.add_argument("--conf", default=None, type=float, help="test conf")
     parser.add_argument("--nms", default=None, type=float, help="test nms threshold")
     parser.add_argument("--tsize", default=None, type=int, help="test img size")
@@ -67,6 +71,13 @@ def make_parser():
         default=False,
         action="store_true",
         help="Adopting mix precision evaluating.",
+    )
+    parser.add_argument(
+        "--int8",
+        dest="int8",
+        default=False,
+        action="store_true",
+        help="Adopting int8 quantization for evaluating.",
     )
     parser.add_argument(
         "--fuse",
@@ -215,19 +226,19 @@ def main(exp, args, num_gpu):
     print('start evaluate')
     if not args.onnx and not args.onnx2trt and not args.tvmeval: # NEW CHANGE
         *_, summary = evaluator.evaluate(
-            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size
+            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, start_time=args.start_time
         )
     elif args.onnx2trt:
         *_, summary = evaluator.evaluate(
-            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, onnx2trt=True, engine_file_path=args.ckpt
+            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, onnx2trt=True, engine_file_path=args.ckpt, start_time=args.start_time
         )
     elif args.onnx:
         *_, summary = evaluator.evaluate(
-            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, onnx=True, onnx_path=args.ckpt
+            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, onnx=True, onnx_path=args.ckpt, start_time=args.start_time
         )
     elif args.tvmeval:
         *_, summary = evaluator.evaluate(
-            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, tvmeval=True, onnx_path=args.ckpt
+            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, tvmeval=True, onnx_path=args.ckpt, tuning_records=args.tuning_records, int8=args.int8, start_time=args.start_time
         )
 
     logger.info("\n" + summary)

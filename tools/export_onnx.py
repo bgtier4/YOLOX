@@ -28,9 +28,6 @@ def make_parser():
     parser.add_argument(
         "-o", "--opset", default=11, type=int, help="onnx opset version"
     )
-    parser.add_argument(
-        "-p", "--precision", default='fp32', type=str, help="onnx opset version"
-    )
     parser.add_argument("--batch-size", type=int, default=1, help="batch size")
     parser.add_argument(
         "--dynamic", action="store_true", help="whether the input shape should be dynamic or not"
@@ -82,8 +79,6 @@ def main():
     ckpt = torch.load(ckpt_file, map_location="cpu")
 
     model.eval()
-    if args.precision == 'fp16':
-        model.half()
     if "model" in ckpt:
         ckpt = ckpt["model"]
     model.load_state_dict(ckpt)

@@ -142,6 +142,13 @@ def make_parser():
         action="store_true",
         help="Configure evaluation to evaluate with tvm",
     )
+    parser.add_argument(
+        "--autoscheduler",
+        dest="autoscheduler",
+        default=False,
+        action="store_true",
+        help="TVM records were built with autoscheduler",
+    )
     return parser
 
 
@@ -238,7 +245,7 @@ def main(exp, args, num_gpu):
         )
     elif args.tvmeval:
         *_, summary = evaluator.evaluate(
-            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, tvmeval=True, onnx_path=args.ckpt, tuning_records=args.tuning_records, int8=args.int8, start_time=args.start_time
+            model, is_distributed, args.fp16, trt_file, decoder, exp.test_size, tvmeval=True, onnx_path=args.ckpt, tuning_records=args.tuning_records, autoscheduler=args.autoscheduler int8=args.int8, start_time=args.start_time
         )
 
     logger.info("\n" + summary)

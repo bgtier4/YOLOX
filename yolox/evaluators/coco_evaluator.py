@@ -135,8 +135,8 @@ class COCOEvaluator:
     def evaluate(
         self, model, distributed=False, half=False, trt_file=None,
         decoder=None, test_size=None, return_outputs=False, onnx=False, onnx_path="",
-        onnx2trt=False, engine_file_path="", tvmeval=False, tuning_records="", int8=False,
-        start_time=0
+        onnx2trt=False, engine_file_path="", tvmeval=False, tuning_records="", autoscheduler=False
+        int8=False, start_time=0
     ):
         """
         COCO average precision (AP) Evaluation. Iterate inference on the test dataset
@@ -187,7 +187,7 @@ class COCOEvaluator:
         elif onnx2trt:
             context = self.setup_trt(engine_file_path)
         elif tvmeval: 
-            module = self.setup_tvm(onnx_path, test_size, tuning_records, half, int8)
+            module = self.setup_tvm(onnx_path, test_size, tuning_records, half, int8, autoscheduler)
         else:
             model = self.setup_base(model, half, trt_file, test_size)
 
@@ -206,6 +206,7 @@ class COCOEvaluator:
         ):
             with torch.no_grad():
                 imgs = imgs.type(tensor_type)
+                tvm_imgs = np.expand_dims(imgs[0].cpu().numpy(), axis=0)
 
                 # skip the last iters since batchsize might be not enough for batch inference
                 is_time_record = cur_iter < len(self.dataloader) - 1
@@ -218,7 +219,7 @@ class COCOEvaluator:
                 elif onnx2trt:
                     outputs = self.get_outputs_trt(imgs, context, output_shape)
                 elif tvmeval: 
-                    outputs = self.get_outputs_tvm(imgs, module, output_shape, dtype)
+                    outputs = self.get_outputs_tvm(tvm_imgs, module, output_shape, dtype)
                 else:
                     outputs = model(imgs)
 
@@ -325,7 +326,7 @@ class COCOEvaluator:
         return context
 
 
-    def setup_tvm(self, onnx_path, test_size, tuning_records, half, int8):
+    def setup_tvm(self, onnx_path, test_size, tuning_records, half, int8, autoscheduler):
         print('setting up tvm...')
 
         # prep tvm
@@ -335,10 +336,16 @@ class COCOEvaluator:
         import onnx as onnx4tvm
         onnx_model = onnx4tvm.load(onnx_path)
         mod, params = relay.frontend.from_onnx(onnx_model, shape_list)
+        print(type(mod))
+        print('mod = ', mod)
+        print(type(params))
+        print('params = ', params)
 
+        new_tuning_records = None
         if half:
             mod = tvm.relay.transform.ToMixedPrecision(mixed_precision_type='float16')(mod)
-        elif int8:
+            tvmc_model = TVMCModel(mod, params)
+        elif int8: # this does not work well right now
             with relay.quantize.qconfig(calibrate_mode="global_scale", global_scale=8.0):
                 mod = relay.quantize.quantize(mod, params)
 
@@ -346,10 +353,14 @@ class COCOEvaluator:
         dev = tvm.cuda(0)
         if tuning_records != None:
             print('tuning records found')
-            #with tvm.autotvm.apply_history_best(tuning_records):  
-            with tvm.auto_scheduler.ApplyHistoryBest(tuning_records):  
-                with tvm.transform.PassContext(opt_level=3):
-                    lib = relay.build(mod, target=target, params=params)
+            if (autoscheduler)
+                with tvm.auto_scheduler.ApplyHistoryBest(tuning_records):  
+                    with tvm.transform.PassContext(opt_level=3, config={"relay.backend.use_auto_scheduler": True}):
+                        lib = relay.build(mod, target=target, params=params)
+            else:
+                with tvm.autotvm.apply_history_best(tuning_records):  
+                    with tvm.transform.PassContext(opt_level=3):
+                        lib = relay.build(mod, target=target, params=params)
         else:
             with tvm.transform.PassContext(opt_level=3):
                 lib = relay.build(mod, target=target, params=params)
@@ -389,13 +400,17 @@ class COCOEvaluator:
         return output_buffer
 
 
-    def get_outputs_tvm(self, imgs, module, output_shape, dtype):
-        tvm_imgs = np.expand_dims(imgs[0].cpu().numpy(), axis=0)
+    def get_outputs_tvm(self, tvm_imgs, module, output_shape, dtype):
         dev = tvm.cuda(0)
-
         input_name = "images"
+
         module.set_input(input_name, tvm_imgs)
         module.run()
+
+        # to avoid cuda out of memory error
+        # print('emptying cache...')
+        # gc.collect()
+        # torch.cuda.empty_cache()
 
         return module.get_output(0, tvm.nd.empty(output_shape, dtype, device=dev)).numpy().astype(np.float32)
 

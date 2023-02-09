@@ -87,8 +87,6 @@ def main():
 
     logger.info("loading checkpoint done.")
     dummy_input = torch.randn(args.batch_size, 3, exp.test_size[0], exp.test_size[1])
-    if args.precision == 'fp16':
-        dummy_input = dummy_input.half()
 
     torch.onnx._export(
         model,

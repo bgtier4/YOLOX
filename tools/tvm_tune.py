@@ -4,9 +4,12 @@ from tvm.driver.tvmc.model import TVMCModel
 from tvm.relay.transform import InferType, ToMixedPrecision, mixed_precision
 from tvm import relay
 
+import argparse
+
 def make_parser():
     parser = argparse.ArgumentParser("YOLOX TVM Tune")
     parser.add_argument("--tsize", default=(640,640), type=int, help="input img size")
+    parser.add_argument("-t", "--tuning_trials", default=0, type=int, help="number of tuning trials")
     parser.add_argument(
         "--half",
         dest="half",
@@ -27,9 +30,8 @@ def make_parser():
     return parser
 
 
-def tune_tvm(tvmc_model, prior_records, new_records, enable_autoscheduler=False):
+def tune_tvm(tvmc_model, prior_records, new_records, tuning_trials, enable_autoscheduler=False):
         target = 'cuda'
-        tuning_trials = 8000
         target_host = 'llvm'
 
         tvmc.tune(
@@ -58,9 +60,9 @@ def main():
 
     tvmc_model = TVMCModel(mod, params)
 
-    new_records = "../tuning_records/new_records.json"
+    new_records = "tuning_records/new_records.json"
 
-    tune_tvm(tvmc_model, args.tuning_records, new_records, enable_autoscheduler=args.autoscheduler)
+    tune_tvm(tvmc_model, args.tuning_records, new_records, args.tuning_trials, enable_autoscheduler=args.autoscheduler)
 
 if __name__ == "__main__":
     main()

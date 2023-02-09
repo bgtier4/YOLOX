@@ -135,7 +135,7 @@ class COCOEvaluator:
     def evaluate(
         self, model, distributed=False, half=False, trt_file=None,
         decoder=None, test_size=None, return_outputs=False, onnx=False, onnx_path="",
-        onnx2trt=False, engine_file_path="", tvmeval=False, tuning_records="", autoscheduler=False
+        onnx2trt=False, engine_file_path="", tvmeval=False, tuning_records="", autoscheduler=False,
         int8=False, start_time=0
     ):
         """
@@ -353,7 +353,7 @@ class COCOEvaluator:
         dev = tvm.cuda(0)
         if tuning_records != None:
             print('tuning records found')
-            if (autoscheduler)
+            if (autoscheduler):
                 with tvm.auto_scheduler.ApplyHistoryBest(tuning_records):  
                     with tvm.transform.PassContext(opt_level=3, config={"relay.backend.use_auto_scheduler": True}):
                         lib = relay.build(mod, target=target, params=params)

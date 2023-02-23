@@ -336,10 +336,6 @@ class COCOEvaluator:
         import onnx as onnx4tvm
         onnx_model = onnx4tvm.load(onnx_path)
         mod, params = relay.frontend.from_onnx(onnx_model, shape_list)
-        print(type(mod))
-        print('mod = ', mod)
-        print(type(params))
-        print('params = ', params)
 
         new_tuning_records = None
         if half:
@@ -406,11 +402,7 @@ class COCOEvaluator:
 
         module.set_input(input_name, tvm_imgs)
         module.run()
-
-        # to avoid cuda out of memory error
-        # print('emptying cache...')
-        # gc.collect()
-        # torch.cuda.empty_cache()
+        
 
         return module.get_output(0, tvm.nd.empty(output_shape, dtype, device=dev)).numpy().astype(np.float32)
 
